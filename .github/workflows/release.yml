@@ -1,0 +1,58 @@
+name: Windows release and update feed
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Build application and updater
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "Etiket v1.2.3 biçiminde olmalı: $env:GITHUB_REF_NAME"
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          ./build.ps1 -Version $version -Repository $env:GITHUB_REPOSITORY
+
+      - name: Publish release files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            dist/DosyaGezgini.exe `
+            dist/DosyaGezgini-Updater.exe `
+            dist/DosyaGezgini-IlkKurulum.zip `
+            --title "Dosya Gezgini $($env:GITHUB_REF_NAME.Substring(1))" `
+            --generate-notes
+
+      - name: Prepare update page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/site
+
+  publish-update-page:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish update manifest and page
+        id: deployment
+        uses: actions/deploy-pages@v4
