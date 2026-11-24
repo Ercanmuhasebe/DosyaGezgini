@@ -912,6 +912,7 @@ internal sealed class FileExplorerStarter : Form
                 !String.Equals(Path.GetFileName(newName), newName, StringComparison.Ordinal))
             {
                 MessageBox.Show(this, "Geçerli bir dosya veya klasör adı girin.", "Yeniden adlandır", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ResumeInlineRename(e.Item, newName);
                 return;
             }
             string sourcePath = entry.FullPath;
@@ -920,7 +921,11 @@ internal sealed class FileExplorerStarter : Form
             try
             {
                 if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
-                    throw new IOException("Bu adla bir dosya veya klasör zaten var.");
+                {
+                    MessageBox.Show(this, "Bu adla bir dosya veya klasör zaten var.", "Yeniden adlandırılamadı", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    ResumeInlineRename(e.Item, newName);
+                    return;
+                }
                 if (Directory.Exists(sourcePath)) Directory.Move(sourcePath, destinationPath);
                 else File.Move(sourcePath, destinationPath);
                 BeginInvoke((MethodInvoker)(() =>
@@ -931,7 +936,9 @@ internal sealed class FileExplorerStarter : Form
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "Yeniden adlandırılamadı", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (!IsSharingViolation(ex))
+                    MessageBox.Show(this, ex.Message, "Yeniden adlandırılamadı", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ResumeInlineRename(e.Item, newName);
             }
         };
         folders.SelectionMode = SelectionMode.MultiExtended;
@@ -1671,6 +1678,44 @@ internal sealed class FileExplorerStarter : Form
             }
             finally { allowInlineRenameStart = false; }
         }));
+    }
+
+    private void ResumeInlineRename(int itemIndex, string editedName)
+    {
+        if (itemIndex < 0) return;
+        BeginInvoke((MethodInvoker)(() =>
+        {
+            if (IsDisposed || files == null || files.IsDisposed || showingComputerDrives || itemIndex >= files.Items.Count) return;
+            ListViewItem item = files.Items[itemIndex];
+            item.Selected = true;
+            files.FocusedItem = item;
+            allowInlineRenameStart = true;
+            try { item.BeginEdit(); }
+            finally { allowInlineRenameStart = false; }
+
+            IntPtr editHandle = SendMessage(files.Handle, 0x1018, IntPtr.Zero, IntPtr.Zero);
+            if (editHandle == IntPtr.Zero) return;
+            IntPtr textPointer = IntPtr.Zero;
+            string nameToRestore = editedName ?? String.Empty;
+            try
+            {
+                textPointer = Marshal.StringToHGlobalUni(nameToRestore);
+                SendMessage(editHandle, 0x000C, IntPtr.Zero, textPointer);
+                int caret = nameToRestore.Length;
+                SendMessage(editHandle, 0x00B1, new IntPtr(caret), new IntPtr(caret));
+            }
+            finally
+            {
+                if (textPointer != IntPtr.Zero) Marshal.FreeHGlobal(textPointer);
+            }
+        }));
+    }
+
+    private static bool IsSharingViolation(Exception exception)
+    {
+        if (!(exception is IOException)) return false;
+        int win32Error = Marshal.GetHRForException(exception) & 0xFFFF;
+        return win32Error == 32 || win32Error == 33;
     }
 
     private void InitializeTransferPage(TabPage page)
