@@ -426,6 +426,8 @@ internal sealed class FileExplorerStarter : Form
     private readonly BackgroundWorker updateInstallWorker = new BackgroundWorker();
     private string updateManifestUrl = DefaultUpdateManifestUrl;
     private bool automaticUpdateCheck = true;
+    private int updateIntervalMinutes = 5;
+    private System.Windows.Forms.Timer automaticUpdateTimer;
     private bool manualUpdateCheck;
     private UpdateRelease pendingUpdateRelease;
     private const string CurrentAppVersion = "1.0.0";
@@ -1610,13 +1612,13 @@ internal sealed class FileExplorerStarter : Form
                 RestoreAllColumnLayouts();
                 ScheduleActivePaneWidthRestore("Gezgin");
                 if (automaticUpdateCheck) CheckForUpdates(false);
-                var updateTimer = new System.Windows.Forms.Timer { Interval = 300000 };
-                updateTimer.Tick += (sender, args) => { if (automaticUpdateCheck) CheckForUpdates(false); };
-                FormClosed += (sender, args) => updateTimer.Dispose();
-                updateTimer.Start();
+                automaticUpdateTimer = new System.Windows.Forms.Timer { Interval = updateIntervalMinutes * 60000 };
+                automaticUpdateTimer.Tick += (sender, args) => { if (automaticUpdateCheck) CheckForUpdates(false); };
+                FormClosed += (sender, args) => automaticUpdateTimer.Dispose();
+                automaticUpdateTimer.Start();
                 var activeJobs = workProfiles.Where(profile => !profile.IsCompleted).Select(profile => profile.Name).ToArray();
                 if (activeJobs.Length > 0)
-                    MessageBox.Show(this, String.Join(Environment.NewLine, activeJobs), "Aktif işler", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    ShowStartupJobs(activeJobs);
             }));
         };
         FormClosing += (s, e) =>
@@ -1665,6 +1667,25 @@ internal sealed class FileExplorerStarter : Form
         StartOneDriveStatusPolling();
         UpdateNavigationButtons();
         ApplyTheme();
+    }
+
+    private void ShowStartupJobs(string[] jobs)
+    {
+        using (var dialog = new Form { Text = "İş Klasörleri • Aktif işler", StartPosition = FormStartPosition.CenterParent,
+            Size = new Size(540, 420), MinimumSize = new Size(400, 300), BackColor = Color.FromArgb(245, 248, 252),
+            Font = new Font("Segoe UI", 9F), ShowInTaskbar = false })
+        {
+            var header = new Panel { Dock = DockStyle.Top, Height = 82, BackColor = Color.FromArgb(35, 67, 110) };
+            header.Controls.Add(new Label { Text = "AKTİF İŞLER", ForeColor = Color.White, Font = new Font("Segoe UI", 15F, FontStyle.Bold), AutoSize = true, Location = new Point(20, 12) });
+            header.Controls.Add(new Label { Text = jobs.Length + " iş devam ediyor", ForeColor = Color.FromArgb(200, 220, 245), AutoSize = true, Location = new Point(23, 49) });
+            var list = new ListBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, BackColor = Color.White, ForeColor = Color.FromArgb(70, 40, 50), Font = new Font("Segoe UI", 10F, FontStyle.Bold), IntegralHeight = false };
+            list.Items.AddRange(jobs.Cast<object>().ToArray());
+            var footer = new Panel { Dock = DockStyle.Bottom, Height = 54 };
+            var close = new Button { Text = "Tamam", Size = new Size(100, 32), Anchor = AnchorStyles.Right | AnchorStyles.Top, Location = new Point(410, 10), DialogResult = DialogResult.OK };
+            footer.Controls.Add(close);
+            dialog.Controls.Add(list); dialog.Controls.Add(footer); dialog.Controls.Add(header); dialog.AcceptButton = close;
+            dialog.ShowDialog(this);
+        }
     }
 
     private void BeginInlineRename(ListViewItem item)
@@ -6081,6 +6102,7 @@ internal sealed class FileExplorerStarter : Form
                 else if (key == "activeTab") savedActiveTabName = value;
                 else if (key == "searchSubfolders") searchSubfolders = enabled;
                 else if (key == "automaticUpdateCheck") automaticUpdateCheck = enabled;
+                else if (key == "updateIntervalMinutes") { int minutes; if (Int32.TryParse(value, out minutes)) updateIntervalMinutes = Math.Max(1, Math.Min(1440, minutes)); }
                 else if (key == "updateManifestUrl")
                     updateManifestUrl = String.IsNullOrWhiteSpace(value) ? DefaultUpdateManifestUrl : value;
             }
@@ -6111,6 +6133,7 @@ internal sealed class FileExplorerStarter : Form
                 "activeTab=" + (tabs.SelectedTab == null ? savedActiveTabName : tabs.SelectedTab.Text),
                 "searchSubfolders=" + (searchSubfolders ? "1" : "0"),
                 "automaticUpdateCheck=" + (automaticUpdateCheck ? "1" : "0"),
+                "updateIntervalMinutes=" + updateIntervalMinutes.ToString(CultureInfo.InvariantCulture),
                 "updateManifestUrl=" + updateManifestUrl
             });
         }
@@ -10614,7 +10637,7 @@ internal sealed class FileExplorerStarter : Form
             Size = new Size(620, 132),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
-        automaticUpdateCheckOption.Text = "Program açılışında yeni sürüm kontrol et";
+        automaticUpdateCheckOption.Text = "Otomatik sürüm kontrolü";
         automaticUpdateCheckOption.AutoSize = true;
         automaticUpdateCheckOption.Location = new Point(14, 24);
         automaticUpdateCheckOption.Checked = automaticUpdateCheck;
@@ -10648,6 +10671,14 @@ internal sealed class FileExplorerStarter : Form
             ForeColor = Color.FromArgb(82, 94, 112)
         };
         updateGroup.Controls.Add(automaticUpdateCheckOption);
+        var intervalLabel = new Label { Text = "Aralık (dk):", AutoSize = true, Location = new Point(245, 26) };
+        var intervalBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(320, 21), Width = 72 };
+        foreach (int minutes in new[] { 1, 5, 10, 15, 30, 60, 120, 240, 1440 }) intervalBox.Items.Add(minutes);
+        if (!intervalBox.Items.Contains(updateIntervalMinutes)) intervalBox.Items.Add(updateIntervalMinutes);
+        intervalBox.SelectedItem = updateIntervalMinutes;
+        intervalBox.SelectedIndexChanged += (s, e) => { updateIntervalMinutes = (int)intervalBox.SelectedItem; if (automaticUpdateTimer != null) { automaticUpdateTimer.Stop(); automaticUpdateTimer.Interval = updateIntervalMinutes * 60000; automaticUpdateTimer.Start(); } SavePreferences(); };
+        updateGroup.Controls.Add(intervalLabel);
+        updateGroup.Controls.Add(intervalBox);
         updateGroup.Controls.Add(manifestUrlLabel);
         updateGroup.Controls.Add(updateManifestUrlBox);
         updateGroup.Controls.Add(checkUpdateButton);
@@ -13414,7 +13445,7 @@ internal sealed class FileExplorerStarter : Form
             if (selected == null || !IsOneDrivePath(selected.FullPath)) return;
             try
             {
-                string arguments = (keep ? "+P -U " : "-P +U ") + QuoteProcessArgument(selected.FullPath);
+                string arguments = (keep ? "+P -U " : "-P +U ") + QuoteProcessArgument(selected.FullPath) + (Directory.Exists(selected.FullPath) ? " /S /D" : "");
                 Process.Start(new ProcessStartInfo("attrib.exe", arguments) { UseShellExecute = false, CreateNoWindow = true });
                 status.Text = keep ? "OneDrive çevrimdışı kullanım isteği gönderildi." : "OneDrive yer açma isteği gönderildi.";
             }
@@ -13432,13 +13463,47 @@ internal sealed class FileExplorerStarter : Form
         };
         rarHere.Click += (s, e) => ExtractSelectedArchive(contextRow == null ? null : contextRow.Tag as Entry, ArchiveExtractionTarget.Here);
         rarFolder.Click += (s, e) => ExtractSelectedArchive(contextRow == null ? null : contextRow.Tag as Entry, ArchiveExtractionTarget.ArchiveFolder);
-        openWith.Click += (s, e) =>
+        openWith.DropDownOpening += (s, e) =>
         {
+            openWith.DropDownItems.Clear();
             Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
             if (selected == null || !File.Exists(selected.FullPath)) return;
-            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,OpenAs_RunDLL \"" + selected.FullPath + "\"") { UseShellExecute = true }); }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Birlikte aç", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+            string path = selected.FullPath;
+            var applications = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string ext = Path.GetExtension(path);
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\" + ext + @"\OpenWithList"))
+                    if (key != null) foreach (string name in key.GetValueNames())
+                    {
+                        string app = key.GetValue(name) as string;
+                        if (!String.IsNullOrWhiteSpace(app) && app.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && Path.GetFileName(app) == app) applications.Add(app);
+                    }
+                using (RegistryKey key = Registry.ClassesRoot.OpenSubKey(ext + @"\OpenWithList"))
+                    if (key != null) foreach (string app in key.GetSubKeyNames()) if (app.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) applications.Add(app);
+            }
+            catch { }
+            foreach (string app in applications.OrderBy(item => item, StringComparer.CurrentCultureIgnoreCase))
+            {
+                string executable = app;
+                var item = new ToolStripMenuItem(Path.GetFileNameWithoutExtension(app));
+                item.Click += (sender, args) =>
+                {
+                    try { Process.Start(new ProcessStartInfo(executable, QuoteProcessArgument(path)) { UseShellExecute = true }); }
+                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "Birlikte aç", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                };
+                openWith.DropDownItems.Add(item);
+            }
+            if (openWith.DropDownItems.Count > 0) openWith.DropDownItems.Add(new ToolStripSeparator());
+            var choose = new ToolStripMenuItem("Başka bir uygulama seç...");
+            choose.Click += (sender, args) =>
+            {
+                try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,OpenAs_RunDLL " + QuoteProcessArgument(path)) { UseShellExecute = true }); }
+                catch (Exception ex) { MessageBox.Show(this, ex.Message, "Birlikte aç", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+            };
+            openWith.DropDownItems.Add(choose);
         };
+        openWith.DropDownItems.Add("Yükleniyor...");
         openExplorerItem.Click += (s, e) =>
         {
             Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
