@@ -1522,6 +1522,13 @@ internal sealed class FileExplorerStarter : Form
         Controls.Add(tabs);
         Controls.Add(status);
         Controls.Add(top);
+        var versionLabel = new Label { AutoSize = true, Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+            ForeColor = Color.RoyalBlue, BackColor = Color.White, Font = new Font("Segoe UI", 8F, FontStyle.Bold),
+            Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString() };
+        status.Controls.Add(versionLabel);
+        Action placeVersion = () => versionLabel.Location = new Point(Math.Max(0, status.ClientSize.Width - versionLabel.Width - 12), 6);
+        status.Resize += (s, e) => placeVersion();
+        placeVersion();
         KeyPreview = true;
         KeyDown += (s, e) =>
         {
@@ -1603,6 +1610,13 @@ internal sealed class FileExplorerStarter : Form
                 RestoreAllColumnLayouts();
                 ScheduleActivePaneWidthRestore("Gezgin");
                 if (automaticUpdateCheck) CheckForUpdates(false);
+                var updateTimer = new System.Windows.Forms.Timer { Interval = 300000 };
+                updateTimer.Tick += (sender, args) => { if (automaticUpdateCheck) CheckForUpdates(false); };
+                FormClosed += (sender, args) => updateTimer.Dispose();
+                updateTimer.Start();
+                var activeJobs = workProfiles.Where(profile => !profile.IsCompleted).Select(profile => profile.Name).ToArray();
+                if (activeJobs.Length > 0)
+                    MessageBox.Show(this, String.Join(Environment.NewLine, activeJobs), "Aktif işler", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }));
         };
         FormClosing += (s, e) =>
@@ -11323,11 +11337,24 @@ internal sealed class FileExplorerStarter : Form
         synchronizingFolderTree = true;
         try
         {
+            string selectedPath = folderTree.SelectedNode == null ? null : folderTree.SelectedNode.Tag as string;
+            var existing = node.Nodes.Cast<TreeNode>().Where(child => child.Tag is string)
+                .ToDictionary(child => (string)child.Tag, StringComparer.OrdinalIgnoreCase);
+            string[] directories = Directory.GetDirectories(path)
+                .OrderBy(item => Path.GetFileName(item), NaturalNameComparer.Instance).ToArray();
             node.Nodes.Clear();
-            foreach (string directory in Directory.GetDirectories(path)
-                .OrderBy(item => Path.GetFileName(item), NaturalNameComparer.Instance))
-                node.Nodes.Add(CreateFolderTreeNode(Path.GetFileName(directory), directory));
+            foreach (string directory in directories)
+            {
+                TreeNode child;
+                if (!existing.TryGetValue(directory, out child)) child = CreateFolderTreeNode(Path.GetFileName(directory), directory);
+                node.Nodes.Add(child);
+            }
             if (wasExpanded) node.Expand();
+            if (!String.IsNullOrEmpty(selectedPath))
+            {
+                TreeNode selectedNode = FindFolderTreeNode(selectedPath);
+                if (selectedNode != null) folderTree.SelectedNode = selectedNode;
+            }
         }
         catch { }
         finally { synchronizingFolderTree = false; }
@@ -13233,8 +13260,20 @@ internal sealed class FileExplorerStarter : Form
         };
         menu.Items.Add(actionBarHost);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(clipboardMenu);
         menu.Items.Add(openFile);
+        var openWith = new ToolStripMenuItem("Birlikte aç...");
+        menu.Items.Add(openWith);
+        var pasteInEmptyArea = new ToolStripMenuItem("Yapıştır");
+        var oneDriveMenu = new ToolStripMenuItem("OneDrive");
+        var keepOffline = new ToolStripMenuItem("Her zaman bu cihazda sakla");
+        var freeSpace = new ToolStripMenuItem("Yer aç");
+        oneDriveMenu.DropDownItems.AddRange(new ToolStripItem[] { keepOffline, freeSpace });
+        var winRarMenu = new ToolStripMenuItem("WinRAR");
+        var rarOpen = new ToolStripMenuItem("WinRAR ile aç");
+        var rarHere = new ToolStripMenuItem("Buraya ayıkla");
+        var rarFolder = new ToolStripMenuItem("Klasöre ayıkla");
+        winRarMenu.DropDownItems.AddRange(new ToolStripItem[] { rarOpen, rarHere, rarFolder });
+        menu.Items.Add(clipboardMenu);
         menu.Items.Add(preview);
         menu.Items.Add(viewMenu);
         menu.Items.Add(sortMenu);
@@ -13250,7 +13289,10 @@ internal sealed class FileExplorerStarter : Form
         menu.Items.Add(fileTasksMenu);
         menu.Items.Add(whatsappSafeShare);
         menu.Items.Add(compressionMenu);
+        menu.Items.Add(oneDriveMenu);
+        menu.Items.Add(winRarMenu);
         menu.Items.Add(moreMenu);
+        menu.Items.Add(pasteInEmptyArea);
         menu.ShowItemToolTips = true;
 
         SetMenuGlyph(openFile, "\uE8A5");
@@ -13305,6 +13347,19 @@ internal sealed class FileExplorerStarter : Form
             actionBar.BackColor = menuBackground;
             actionBarHost.BackColor = menuBackground;
             Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
+            bool hasTarget = selected != null;
+            oneDriveMenu.Visible = hasTarget && IsOneDrivePath(selected.FullPath);
+            winRarMenu.Visible = hasTarget && !String.IsNullOrWhiteSpace(FindWinRarExecutable());
+            bool isWinRarArchive = hasTarget && File.Exists(selected.FullPath) &&
+                (String.Equals(Path.GetExtension(selected.FullPath), ".zip", StringComparison.OrdinalIgnoreCase) || String.Equals(Path.GetExtension(selected.FullPath), ".rar", StringComparison.OrdinalIgnoreCase));
+            rarOpen.Enabled = rarHere.Enabled = rarFolder.Enabled = isWinRarArchive;
+            actionBarHost.Visible = hasTarget;
+            pasteInEmptyArea.Visible = !hasTarget;
+            openFile.Visible = openWith.Visible = preview.Visible = clipboardMenu.Visible = manageMenu.Visible = fileTasksMenu.Visible = whatsappSafeShare.Visible = compressionMenu.Visible = hasTarget;
+            viewMenu.Visible = sortMenu.Visible = groupMenu.Visible = newMenu.Visible = !hasTarget;
+            if (hasTarget && contextRow.ImageIndex >= 0 && list.SmallImageList != null && contextRow.ImageIndex < list.SmallImageList.Images.Count)
+                openFile.Image = list.SmallImageList.Images[contextRow.ImageIndex];
+            openWith.Enabled = selected != null && File.Exists(selected.FullPath);
             previewPaneItem.Checked = previewPaneOpen;
             previewPaneItem.Enabled = selected != null && File.Exists(selected.FullPath);
             sortName.Checked = fileSortColumn == 0;
@@ -13349,7 +13404,40 @@ internal sealed class FileExplorerStarter : Form
                 (!String.IsNullOrWhiteSpace(pendingFolderClipboardPath) && Directory.Exists(pendingFolderClipboardPath)); }
             catch { paste.Enabled = !String.IsNullOrWhiteSpace(pendingFolderClipboardPath) && Directory.Exists(pendingFolderClipboardPath); }
             pasteButton.Enabled = paste.Enabled;
+            pasteInEmptyArea.Enabled = paste.Enabled;
             deleteButton.Enabled = delete.Enabled;
+        };
+        pasteInEmptyArea.Click += (s, e) => PasteFiles();
+        Action<bool> setCloudAvailability = keep =>
+        {
+            Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
+            if (selected == null || !IsOneDrivePath(selected.FullPath)) return;
+            try
+            {
+                string arguments = (keep ? "+P -U " : "-P +U ") + QuoteProcessArgument(selected.FullPath);
+                Process.Start(new ProcessStartInfo("attrib.exe", arguments) { UseShellExecute = false, CreateNoWindow = true });
+                status.Text = keep ? "OneDrive çevrimdışı kullanım isteği gönderildi." : "OneDrive yer açma isteği gönderildi.";
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "OneDrive", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+        };
+        keepOffline.Click += (s, e) => setCloudAvailability(true);
+        freeSpace.Click += (s, e) => setCloudAvailability(false);
+        rarOpen.Click += (s, e) =>
+        {
+            Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
+            string exe = FindWinRarExecutable();
+            if (selected == null || String.IsNullOrEmpty(exe)) return;
+            try { Process.Start(new ProcessStartInfo(exe, QuoteProcessArgument(selected.FullPath)) { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "WinRAR", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+        };
+        rarHere.Click += (s, e) => ExtractSelectedArchive(contextRow == null ? null : contextRow.Tag as Entry, ArchiveExtractionTarget.Here);
+        rarFolder.Click += (s, e) => ExtractSelectedArchive(contextRow == null ? null : contextRow.Tag as Entry, ArchiveExtractionTarget.ArchiveFolder);
+        openWith.Click += (s, e) =>
+        {
+            Entry selected = contextRow == null ? null : contextRow.Tag as Entry;
+            if (selected == null || !File.Exists(selected.FullPath)) return;
+            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,OpenAs_RunDLL \"" + selected.FullPath + "\"") { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Birlikte aç", MessageBoxButtons.OK, MessageBoxIcon.Information); }
         };
         openExplorerItem.Click += (s, e) =>
         {
